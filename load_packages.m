@@ -1,4 +1,5 @@
 function load_packages(current_dir)
+
     if ~exist(fullfile(current_dir, 'src'), 'dir')
         warning('Directory "src" does not exist in the current path.');
         disp('Cloning the repository...');
@@ -12,8 +13,7 @@ function load_packages(current_dir)
         system('git clone https://github.com/Le-Xuan-Thang/RRI.git');
     end
     addpath(fullfile(current_dir, 'Generate Acc'));
-    
-    
+   
     % Define the stabil folder path
     stabil_folder = fullfile(current_dir, 'stabil');
     % Check if the OAs folder exists; if not, clone it from GitHub
@@ -32,6 +32,7 @@ function load_packages(current_dir)
     else
         fprintf('Repository cloned successfully.\n');
     end
+    addpath(fullfile(current_dir, 'stabil'));
 
 
     if ~exist(fullfile(current_dir, 'Data'), 'dir')

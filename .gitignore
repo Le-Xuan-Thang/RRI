@@ -4,4 +4,6 @@ Models/
 matlab-mcp-server/
 .vscode/
 Data/
-ml_dataset/
+ml_dataset/.DS_Store
+*/.DS_Store
+.cursor/

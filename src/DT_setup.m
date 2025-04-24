@@ -6,15 +6,14 @@ function [model, params] = DT_setup()
     % Initialize parameter structure
     params = struct();
     
-    %% Define random parameters with their distributions
+    % Define random parameters with their distributions
     % E: Young's modulus (Log-Normal)
-    params.E_mean = 3.5e10;    % Mean value [kN/m^2]
-    params.E_std = 0.5e10;     % Standard deviation
+    params.E_mean = 2.0e11;    % Mean value [N/m2]
     params.E_cov = 0.15;       % Coefficient of variation
     params.E_dist = 'lognormal';
     
     % ρ: Density (Normal)
-    params.rho_mean = 2500;    % Mean value [kg/m^3]
+    params.rho_mean = 7800;    % Mean value [kg/m^3]
     params.rho_std = 125;      % Standard deviation
     params.rho_dist = 'normal';
     
@@ -44,7 +43,7 @@ function [model, params] = DT_setup()
     addpath('Generate Acc');
     
     % Create a model wrapper (assuming CuaRaoBridge_main accepts these parameters)
-    model = @(params) run_model(params);
+    model = @(params_sample) run_model(params_sample);
     
     % Output
     disp('Digital Twin setup complete with random parameters defined');
@@ -60,60 +59,89 @@ function results = run_model(params_sample)
     T = params_sample.T;
     qw = params_sample.qw;
     deg = params_sample.deg;
+%     fprintf("Running model with:\n");
+%     fprintf("  E: %.2e\n", E);
+%     fprintf("  rho: %.2f\n", rho);
+%     fprintf("  RH: %.2f\n", RH);
+%     fprintf("  T: %.2f\n", T);
+%     fprintf("  qw: %.2f\n", qw);
+%     fprintf("  deg: %.2f\n", deg);
     
-    % Display the parameters used for this run
-    fprintf('Running model with parameters:\n');
-    fprintf('E: %.2e, ρ: %.2f, RH: %.2f, T: %.2f, qw: %.2f, deg: %.2f\n', ...
-            E, rho, RH, T, qw, deg);
-
     % Store current directory to return to it after running the model
     currentDir = pwd;
-    
-    % Change to the directory with the bridge model
-    addpath('Generate Acc');
     
     % Run the bridge model while adjusting the material properties
     % We'll need to modify material properties based on our random parameters
     try
-        % Load nodes and elements
-        run('Generate Acc/CuaRao_Nodes.m');
-        run('Generate Acc/CuaRao_Elements.m');
+        % Load the existing model
+        run('Generate Acc/CuaRaoBridge_main.m')
         
-        % Run the FE model
-        CuaRaoBridge_main
+        % 2. Inject random material updates ------------------------------------
+        % Young’s modulus & density
+        Materials(:,2) = E;                    % update E
+        Materials(:,4) = rho;                  % update ρ (column 4 = ρ)
+    
+        % Simple degradation: reduce sectional area only (can be refined)
+        Sections(:,2)  = Sections(:,2) .* (1 - deg);  % A := A·(1‑δ)
 
-        fprintf("Old material properties:\n");
-        fprintf("E: %.2e, ρ: %.2f\n", E, rho);
+        % 3. Assemble global K once (faster when sampling) ---------------------
+        [K,M] = asmkm(Nodes, Elements, Types, Sections, Materials, DOF);
 
-        % Apply wind load (qw) based on random parameter
-        % The load is applied perpendicular to the bridge deck
-        % Simplified: assume uniform pressure on exposed surfaces
-        
-        % Define loading vector (representative, would need adjusting)
-        % F = zeros(size(K,1), 1);
-        % wind_nodes = []; % Define nodes where wind load is applied
-        % for i = 1:length(wind_nodes)
-        %     dof_indices = []; % Define DOF indices for these nodes
-        %     F(dof_indices) = F(dof_indices) + qw * exposed_area;
-        % end
-        
-        % Static analysis (displacement and stress)
-        % U = K\F;
-        % displacements = zeros(size(Nodes,1)*6, 1);
-        % displacements(DOF) = U;
-        
-        % Store results in struct
-        results = struct();
-        results.frequencies = f0;
-        % results.displacements = displacements;
-        % results.phi = phi; % Mode shapes
-        
-        % Calculate maximum rotation and displacement
-        % For demonstration, use placeholders
-        % In practice, this would be calculated from the FE results
-        results.displacements = zeros(10, 1) * (1 + 0.1*RH/100); % Placeholder affected by RH
-        results.rotations = zeros(10, 1) * (1 + 0.05*T/30);      % Placeholder affected by T
-        results.stresses = zeros(10, 1) * (1 + 0.2*qw/1000);     % Placeholder affected by wind load
+        % 4. Build distributed wind load (example 1.2, Stabil manual) ----------
+        %    Apply uniform lateral pressure ±qw along +Y direction on *all*
+        %    beam elements. Modify selector below if you want a subset.
+        %    choose element
+        E_eff = [linspace(1,8,8), linspace(31,38,8), linspace(39,46,8), linspace(17,23,7)];
+        nElem  = size(E_eff,2);
+
+        % qw [N/m²] realisation
+
+        % Own weight
+        DLoadsOwn=accel([0 0 9.81],Elements,Types,Sections,Materials);
+
+        % Each row: [EltID n1X n1Y n1Z n2X n2Y n2Z]
+        DLoadsWind = [Elements(E_eff,1), ...             % EltID
+                  zeros(nElem,1),  qw*ones(nElem,1), zeros(nElem,1), ...
+                  zeros(nElem,1),  qw*ones(nElem,1), zeros(nElem,1) ];
+
+        DLoads=multdloads(DLoadsOwn,DLoadsWind);
+        % Convert distributed loads → equivalent nodal forces
+        P = elemloads(DLoads, Nodes, Elements, Types, DOF);
+    
+        % 5. Solve static problem (wind‑only) ----------------------------------
+        U = K \ P;                    % nodal displacements
+
+        % 6. Post‑process basic responses (extend as needed) -------------------
+        % Element forces → stresses (global CS)
+        % Compute forces
+        [ForcesLCS,ForcesGCS]=elemforces(Nodes,Elements,Types,Sections,Materials,DOF,U,DLoads);
+        % Load combinations
+        % Safety factors
+        gamma_own=1.35;
+        gamma_wind=1.5;
+        % Combination factors
+        psi_wind=1;
+        % Load combination (Ultimate Limit State, ULS)
+%         U_ULS=gamma_own*U(:,1)+gamma_wind*psi_wind*U(:,2);
+        Forces_ULS=gamma_own*ForcesLCS(:,:,1)+gamma_wind*psi_wind*ForcesLCS(:,:,2);
+        DLoads_ULS(:,1)=DLoads(:,1,1);
+        DLoads_ULS(:,2:7)=gamma_own*DLoads(:,2:7,1)+gamma_wind*psi_wind*DLoads(:,2:7,2);
+%         figure;
+%         plotstress('smomzt',Nodes,Elements,Types,Sections,Materials,Forces_ULS,DLoads_ULS)
+        [Stress,loc,Ext] = se_beam('smax',Nodes,Elements,Types,Sections,...
+                            Materials,Forces_ULS,DLoads_ULS);
+        elemMax = cellfun(@(s) max(s), Stress);   % 1×nElemBeams
+        % Eigenvalue problem
+        nMode=12;
+        [~,omega]=eigfem(K,M,nMode);
+        f0 = omega/2/pi;
+
+        % Collect outputs – minimal set for reliability / robustness routines
+        results            = struct();
+        results.displacements   = max(abs(U));                  % useful scalar
+        results.stress     = max(elemMax);                       % element forces
+        results.frequencies= f0;                           % modes from main file
+        results.qw         = qw;                           % store actual wind
         
     catch ME
         % If there's an error, return debugging information
@@ -122,7 +150,7 @@ function results = run_model(params_sample)
         results.frequencies = [1.5, 2.3, 3.1]; % Example placeholder
         results.displacements = zeros(10, 1);  % Example placeholder
         results.stresses = zeros(10, 1);       % Example placeholder
-        results.rotations = zeros(10, 1);      % Example placeholder
+%         results.rotations = zeros(10, 1);      % Example placeholder
         results.error = ME.message;
     end
     
@@ -130,9 +158,7 @@ function results = run_model(params_sample)
     cd(currentDir);
 end
 
-%% Model Calibration
-% Optional: Model calibration function / This one use in the case we have
-% measurement results
+% Optional: Model calibration function
 function params_calibrated = calibrate_model(params, measured_freqs, measured_modes)
     % This function would calibrate E and ρ to match measured frequencies/modes
     % Implement if you have real measurement data

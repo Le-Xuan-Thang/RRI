@@ -1,6 +1,9 @@
 %% Main RRI Calculation Script
 % This script demonstrates the complete RRI workflow (steps 1-4)
 % for the Cua Rao Bridge using the STABIL framework
+clc
+clear
+close all
 
 % Reset MATLAB path to default before adding new paths
 restoredefaultpath;
@@ -11,7 +14,7 @@ current_dir = pwd;
 %% Generate random samples for parameter
 % Add necessary paths with full paths to avoid conflicts
 % Check if the path exists before adding
-load_packages(current_dir);
+load_packages(current_dir); %**** fix later ***%
 %% Step 1: Digital Twin Setup
 disp('====== Step 1: Digital Twin Setup ======');
 [model, params] = DT_setup();
@@ -19,9 +22,9 @@ disp('====== Step 1: Digital Twin Setup ======');
 %% Step 2: Define Limit Values for Limit State Functions
 disp('====== Step 2: Define Limit States ======');
 limit_values = struct();
-limit_values.stress_allow = 355e6;      % Steel yield stress (Pa)
+limit_values.stress_allow = 355000;      % Steel yield stress (kN/m2)
 limit_values.disp_allow = 0.05;         % Maximum allowable displacement (m)
-limit_values.rotation_allow = 0.01;     % Maximum allowable rotation (rad)
+% limit_values.rotation_allow = 0.01;     % Maximum allowable rotation (rad)
 limit_values.freq_min = 0.5;            % Minimum required frequency (Hz)
 
 %% Step 3: Compute Reliability Index
@@ -43,7 +46,7 @@ disp('====== Step 4: Compute Robustness Index and RRI ======');
 % Set options for robustness analysis
 rob_options = struct();
 rob_options.method = 'MCS';    % Monte Carlo Simulation
-rob_options.n_samples = 100;   % Number of samples (use small number for testing)
+rob_options.n_samples = 10;   % Number of samples (use small number for testing)
 rob_options.w1 = 0.6;          % Weight for reliability in RRI
 rob_options.w2 = 0.4;          % Weight for robustness in RRI
 rob_options.damage_scenarios = {'reduce_stiffness'};  % Only one scenario for testing
